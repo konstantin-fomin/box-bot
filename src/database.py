@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import asyncio
+import logging
+import os
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -7,6 +12,9 @@ from typing import Iterable
 
 import aiosqlite
 
+
+LOGGER = logging.getLogger(__name__)
+DB_CONNECT_TIMEOUT_SECONDS = 10
 
 STATUSES = ("home", "storage", "moving", "unpacked")
 
@@ -17,6 +25,45 @@ STATUS_LABELS = {
     "moving": "🚚 в пути",
     "unpacked": "✅ распаковано",
 }
+
+_MIGRATIONS_SQL = """
+CREATE TABLE IF NOT EXISTS boxes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    code TEXT NOT NULL UNIQUE,
+    room TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'home',
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    box_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    FOREIGN KEY (box_id) REFERENCES boxes(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS photos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    box_id INTEGER NOT NULL,
+    file_id TEXT NOT NULL,
+    FOREIGN KEY (box_id) REFERENCES boxes(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS users (
+    user_id INTEGER PRIMARY KEY,
+    name TEXT
+);
+
+CREATE TABLE IF NOT EXISTS room_counters (
+    prefix TEXT PRIMARY KEY,
+    last_number INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_boxes_room ON boxes(room);
+CREATE INDEX IF NOT EXISTS idx_boxes_status ON boxes(status);
+CREATE INDEX IF NOT EXISTS idx_items_name ON items(name);
+CREATE INDEX IF NOT EXISTS idx_photos_box_id ON photos(box_id);
+"""
 
 
 @dataclass(frozen=True)
@@ -34,55 +81,56 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-async def init_db(db_path: Path) -> None:
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    async with aiosqlite.connect(db_path) as db:
-        await db.execute("PRAGMA foreign_keys = ON")
-        await db.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS boxes (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                code TEXT NOT NULL UNIQUE,
-                room TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'home',
-                created_at TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS items (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                box_id INTEGER NOT NULL,
-                name TEXT NOT NULL,
-                FOREIGN KEY (box_id) REFERENCES boxes(id) ON DELETE CASCADE
-            );
-
-            CREATE TABLE IF NOT EXISTS photos (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                box_id INTEGER NOT NULL,
-                file_id TEXT NOT NULL,
-                FOREIGN KEY (box_id) REFERENCES boxes(id) ON DELETE CASCADE
-            );
-
-            CREATE TABLE IF NOT EXISTS users (
-                user_id INTEGER PRIMARY KEY,
-                name TEXT
-            );
-
-            CREATE TABLE IF NOT EXISTS room_counters (
-                prefix TEXT PRIMARY KEY,
-                last_number INTEGER NOT NULL
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_boxes_room ON boxes(room);
-            CREATE INDEX IF NOT EXISTS idx_boxes_status ON boxes(status);
-            CREATE INDEX IF NOT EXISTS idx_items_name ON items(name);
-            CREATE INDEX IF NOT EXISTS idx_photos_box_id ON photos(box_id);
-            """
+async def _wait_for_db(awaitable, description: str, db_path: Path):
+    try:
+        return await asyncio.wait_for(awaitable, timeout=DB_CONNECT_TIMEOUT_SECONDS)
+    except TimeoutError as exc:
+        LOGGER.exception(
+            "SQLite timeout за %s секунд при операции «%s»: %s",
+            DB_CONNECT_TIMEOUT_SECONDS,
+            description,
+            db_path,
         )
-        await db.commit()
+        raise RuntimeError(
+            f"SQLite не ответила за {DB_CONNECT_TIMEOUT_SECONDS} секунд при операции «{description}»: {db_path}"
+        ) from exc
+
+
+@asynccontextmanager
+async def connect_db(db_path: Path) -> AsyncIterator[aiosqlite.Connection]:
+    os.makedirs(db_path.parent, exist_ok=True)
+    connection = aiosqlite.connect(db_path, timeout=DB_CONNECT_TIMEOUT_SECONDS)
+    try:
+        db = await _wait_for_db(connection, "подключение", db_path)
+    except TimeoutError as exc:
+        LOGGER.exception(
+            "Не удалось подключиться к SQLite за %s секунд: %s",
+            DB_CONNECT_TIMEOUT_SECONDS,
+            db_path,
+        )
+        raise RuntimeError(
+            f"Не удалось подключиться к SQLite за {DB_CONNECT_TIMEOUT_SECONDS} секунд: {db_path}"
+        ) from exc
+    except Exception as exc:
+        LOGGER.exception("Не удалось подключиться к SQLite: %s", db_path)
+        raise RuntimeError(f"Не удалось подключиться к SQLite: {db_path}") from exc
+
+    try:
+        yield db
+    finally:
+        await _wait_for_db(db.close(), "закрытие подключения", db_path)
+
+
+async def init_db(db_path: Path) -> None:
+    os.makedirs(db_path.parent, exist_ok=True)
+    async with connect_db(db_path) as db:
+        await _wait_for_db(db.execute("PRAGMA foreign_keys = ON"), "PRAGMA foreign_keys", db_path)
+        await _wait_for_db(db.executescript(_MIGRATIONS_SQL), "миграции", db_path)
+        await _wait_for_db(db.commit(), "commit миграций", db_path)
 
 
 async def upsert_user(db_path: Path, user_id: int, name: str | None) -> None:
-    async with aiosqlite.connect(db_path) as db:
+    async with connect_db(db_path) as db:
         await db.execute(
             """
             INSERT INTO users (user_id, name)
@@ -102,7 +150,7 @@ async def create_box(
     items: Iterable[str],
     photo_file_ids: Iterable[str],
 ) -> Box:
-    async with aiosqlite.connect(db_path) as db:
+    async with connect_db(db_path) as db:
         await db.execute("PRAGMA foreign_keys = ON")
         await db.execute("BEGIN IMMEDIATE")
         cursor = await db.execute(
@@ -152,7 +200,7 @@ async def create_box(
 
 
 async def get_box_by_code(db_path: Path, code: str) -> Box | None:
-    async with aiosqlite.connect(db_path) as db:
+    async with connect_db(db_path) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
             "SELECT id, code, room, status, created_at FROM boxes WHERE UPPER(code) = UPPER(?)",
@@ -165,7 +213,7 @@ async def get_box_by_code(db_path: Path, code: str) -> Box | None:
 
 
 async def get_box_by_id(db_path: Path, box_id: int) -> Box | None:
-    async with aiosqlite.connect(db_path) as db:
+    async with connect_db(db_path) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
             "SELECT id, code, room, status, created_at FROM boxes WHERE id = ?",
@@ -197,7 +245,7 @@ async def list_boxes(
     where = f"WHERE {' AND '.join(filters)}" if filters else ""
     params.extend([limit, offset])
 
-    async with aiosqlite.connect(db_path) as db:
+    async with connect_db(db_path) as db:
         db.row_factory = aiosqlite.Row
         rows = await db.execute_fetchall(
             f"""
@@ -213,14 +261,14 @@ async def list_boxes(
 
 
 async def list_rooms(db_path: Path) -> list[str]:
-    async with aiosqlite.connect(db_path) as db:
+    async with connect_db(db_path) as db:
         rows = await db.execute_fetchall("SELECT DISTINCT room FROM boxes ORDER BY room")
         return [row[0] for row in rows]
 
 
 async def search_boxes(db_path: Path, query: str, limit: int = 10) -> list[Box]:
     like_query = f"%{query.strip().lower()}%"
-    async with aiosqlite.connect(db_path) as db:
+    async with connect_db(db_path) as db:
         db.row_factory = aiosqlite.Row
         rows = await db.execute_fetchall(
             """
@@ -239,7 +287,7 @@ async def search_boxes(db_path: Path, query: str, limit: int = 10) -> list[Box]:
 
 
 async def add_items(db_path: Path, box_id: int, items: Iterable[str]) -> None:
-    async with aiosqlite.connect(db_path) as db:
+    async with connect_db(db_path) as db:
         await db.execute("PRAGMA foreign_keys = ON")
         for item in items:
             clean_item = item.strip()
@@ -252,7 +300,7 @@ async def add_items(db_path: Path, box_id: int, items: Iterable[str]) -> None:
 
 
 async def add_photos(db_path: Path, box_id: int, file_ids: Iterable[str]) -> None:
-    async with aiosqlite.connect(db_path) as db:
+    async with connect_db(db_path) as db:
         await db.execute("PRAGMA foreign_keys = ON")
         for file_id in file_ids:
             await db.execute(
@@ -265,13 +313,13 @@ async def add_photos(db_path: Path, box_id: int, file_ids: Iterable[str]) -> Non
 async def update_status(db_path: Path, box_id: int, status: str) -> None:
     if status not in STATUSES:
         raise ValueError(f"Неизвестный статус: {status}")
-    async with aiosqlite.connect(db_path) as db:
+    async with connect_db(db_path) as db:
         await db.execute("UPDATE boxes SET status = ? WHERE id = ?", (status, box_id))
         await db.commit()
 
 
 async def delete_box(db_path: Path, box_id: int) -> None:
-    async with aiosqlite.connect(db_path) as db:
+    async with connect_db(db_path) as db:
         await db.execute("PRAGMA foreign_keys = ON")
         await db.execute("DELETE FROM boxes WHERE id = ?", (box_id,))
         await db.commit()

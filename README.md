@@ -95,3 +95,41 @@ sudo systemctl status box-bot
 journalctl -u box-bot -f
 tail -f /opt/box-bot/logs/bot.log
 ```
+
+## Troubleshooting
+
+### `aiosqlite.connect()` зависает в sandbox-среде
+
+В ограниченной sandbox-среде, где разрабатывался проект, минимальный вызов `aiosqlite.connect()` мог зависать до выполнения SQL. Это ограничение окружения, а не ожидаемое поведение на обычном VPS. В коде добавлены:
+- явное создание папки `data/` перед подключением к SQLite;
+- `timeout=10` для `aiosqlite.connect()`;
+- ограничение ожидания подключения и понятная ошибка в лог `logs/bot.log`.
+
+Для реального теста на VPS выполните:
+
+```bash
+cd /opt/box-bot
+source .venv/bin/activate
+python - <<'PY'
+import asyncio
+from pathlib import Path
+from src.database import init_db, create_box, search_boxes
+
+async def main():
+    db_path = Path("data/boxes.db")
+    await init_db(db_path)
+    box = await create_box(
+        db_path,
+        prefix="TEST",
+        room="Тест",
+        items=["проверочная вещь"],
+        photo_file_ids=[],
+    )
+    found = await search_boxes(db_path, "проверочная")
+    print(box.code, len(found))
+
+asyncio.run(main())
+PY
+```
+
+Ожидаемый результат: команда завершается без зависания и печатает код тестовой коробки, например `TEST-01 1`.
