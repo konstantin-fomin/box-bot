@@ -1,20 +1,22 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import logging
 import os
+import sqlite3
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
-from typing import Iterable
-
-import aiosqlite
+from typing import Any, Callable, Iterable, TypeVar
 
 
 LOGGER = logging.getLogger(__name__)
 DB_CONNECT_TIMEOUT_SECONDS = 10
+_T = TypeVar("_T")
 
 STATUSES = ("home", "storage", "moving", "unpacked")
 
@@ -77,6 +79,73 @@ class Box:
     photos: tuple[str, ...]
 
 
+class DatabaseCursor:
+    def __init__(self, db: "Database", cursor: sqlite3.Cursor):
+        self._db = db
+        self._cursor = cursor
+
+    @property
+    def lastrowid(self) -> int | None:
+        return self._cursor.lastrowid
+
+    async def fetchone(self) -> sqlite3.Row | None:
+        return await self._db._run(self._cursor.fetchone)
+
+    async def fetchall(self) -> list[sqlite3.Row]:
+        return await self._db._run(self._cursor.fetchall)
+
+
+class Database:
+    def __init__(self, path: str | Path):
+        self.path = str(path)
+        self._conn: sqlite3.Connection | None = None
+        self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="sqlite-db")
+        self._lock = asyncio.Lock()
+
+    async def connect(self) -> None:
+        self._conn = await self._await_future(
+            self._executor.submit(
+                partial(sqlite3.connect, self.path, timeout=DB_CONNECT_TIMEOUT_SECONDS, check_same_thread=False)
+            )
+        )
+        self._conn.row_factory = sqlite3.Row
+
+    async def _await_future(self, future: concurrent.futures.Future[_T]) -> _T:
+        while not future.done():
+            await asyncio.sleep(0.001)
+        return future.result()
+
+    async def _run(self, func: Callable[..., _T], *args: Any) -> _T:
+        if self._conn is None:
+            raise RuntimeError("Database connection is not open")
+        async with self._lock:
+            return await self._await_future(self._executor.submit(partial(func, *args)))
+
+    async def execute(self, query: str, params: Iterable[Any] = ()) -> DatabaseCursor:
+        return DatabaseCursor(self, await self._run(self._conn.execute, query, tuple(params)))
+
+    async def executescript(self, script: str) -> None:
+        await self._run(self._conn.executescript, script)
+
+    async def commit(self) -> None:
+        await self._run(self._conn.commit)
+
+    async def fetchone(self, query: str, params: Iterable[Any] = ()) -> sqlite3.Row | None:
+        cursor = await self.execute(query, params)
+        return await cursor.fetchone()
+
+    async def fetchall(self, query: str, params: Iterable[Any] = ()) -> list[sqlite3.Row]:
+        cursor = await self.execute(query, params)
+        return await cursor.fetchall()
+
+    async def close(self) -> None:
+        if self._conn is None:
+            return
+        await self._run(self._conn.close)
+        self._conn = None
+        self._executor.shutdown(wait=True)
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -97,11 +166,11 @@ async def _wait_for_db(awaitable, description: str, db_path: Path):
 
 
 @asynccontextmanager
-async def connect_db(db_path: Path) -> AsyncIterator[aiosqlite.Connection]:
+async def connect_db(db_path: Path) -> AsyncIterator[Database]:
     os.makedirs(db_path.parent, exist_ok=True)
-    connection = aiosqlite.connect(db_path, timeout=DB_CONNECT_TIMEOUT_SECONDS)
+    db = Database(db_path)
     try:
-        db = await _wait_for_db(connection, "подключение", db_path)
+        await _wait_for_db(db.connect(), "подключение", db_path)
     except TimeoutError as exc:
         LOGGER.exception(
             "Не удалось подключиться к SQLite за %s секунд: %s",
@@ -201,7 +270,6 @@ async def create_box(
 
 async def get_box_by_code(db_path: Path, code: str) -> Box | None:
     async with connect_db(db_path) as db:
-        db.row_factory = aiosqlite.Row
         cursor = await db.execute(
             "SELECT id, code, room, status, created_at FROM boxes WHERE UPPER(code) = UPPER(?)",
             (code,),
@@ -214,7 +282,6 @@ async def get_box_by_code(db_path: Path, code: str) -> Box | None:
 
 async def get_box_by_id(db_path: Path, box_id: int) -> Box | None:
     async with connect_db(db_path) as db:
-        db.row_factory = aiosqlite.Row
         cursor = await db.execute(
             "SELECT id, code, room, status, created_at FROM boxes WHERE id = ?",
             (box_id,),
@@ -246,8 +313,7 @@ async def list_boxes(
     params.extend([limit, offset])
 
     async with connect_db(db_path) as db:
-        db.row_factory = aiosqlite.Row
-        rows = await db.execute_fetchall(
+        rows = await db.fetchall(
             f"""
             SELECT id, code, room, status, created_at
             FROM boxes
@@ -262,15 +328,14 @@ async def list_boxes(
 
 async def list_rooms(db_path: Path) -> list[str]:
     async with connect_db(db_path) as db:
-        rows = await db.execute_fetchall("SELECT DISTINCT room FROM boxes ORDER BY room")
+        rows = await db.fetchall("SELECT DISTINCT room FROM boxes ORDER BY room")
         return [row[0] for row in rows]
 
 
 async def search_boxes(db_path: Path, query: str, limit: int = 10) -> list[Box]:
     like_query = f"%{query.strip().lower()}%"
     async with connect_db(db_path) as db:
-        db.row_factory = aiosqlite.Row
-        rows = await db.execute_fetchall(
+        rows = await db.fetchall(
             """
             SELECT DISTINCT b.id, b.code, b.room, b.status, b.created_at
             FROM boxes b
@@ -325,12 +390,12 @@ async def delete_box(db_path: Path, box_id: int) -> None:
         await db.commit()
 
 
-async def _hydrate_box(db: aiosqlite.Connection, row: aiosqlite.Row) -> Box:
-    item_rows = await db.execute_fetchall(
+async def _hydrate_box(db: Database, row: sqlite3.Row) -> Box:
+    item_rows = await db.fetchall(
         "SELECT name FROM items WHERE box_id = ? ORDER BY id",
         (row["id"],),
     )
-    photo_rows = await db.execute_fetchall(
+    photo_rows = await db.fetchall(
         "SELECT file_id FROM photos WHERE box_id = ? ORDER BY id",
         (row["id"],),
     )

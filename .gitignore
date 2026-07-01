@@ -4,6 +4,8 @@ venv/
 __pycache__/
 *.pyc
 *.py[cod]
+*.db
+*.db-*
 data/*.db
 data/*.db-*
 logs/*.log
