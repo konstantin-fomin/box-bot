@@ -128,7 +128,8 @@ async def finish_create_box(message: Message, state: FSMContext, config: Config,
     await send_box_card(message, box)
     await message.answer_photo(
         photo=make_qr_file(bot_username, box.code),
-        caption=f"QR-код для коробки {html.escape(box.code)}. Его можно распечатать и наклеить на коробку.",
+        caption=f"QR-код для коробки <code>{html.escape(box.code)}</code>. Его можно распечатать и наклеить на коробку.",
+        parse_mode="HTML",
     )
 
 
