@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import html
 import re
+import tempfile
+from datetime import datetime
+from pathlib import Path
 
-from aiogram import F, Router
+from aiogram import Bot, F, Router
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, FSInputFile, Message
 
 from .. import database
 from ..config import Config
@@ -14,15 +17,18 @@ from ..database import Box, STATUS_LABELS
 from ..keyboards import (
     BTN_CANCEL,
     BTN_DONE_PHOTOS,
+    BTN_EXPORT_PDF,
     BTN_NEW_BOX,
     BTN_SKIP_PHOTO,
     box_actions,
     cancel_keyboard,
     main_menu,
+    more_keyboard,
     photos_keyboard,
 )
+from ..pdf_export import generate_boxes_pdf
 from ..qr import make_qr_file
-from ..states import AddItem, AddPhoto, CreateBox
+from ..states import AddItem, CreateBox
 
 
 router = Router(name="boxes")
@@ -318,9 +324,28 @@ async def send_qr_callback(callback: CallbackQuery, config: Config, bot_username
 @router.message(F.text == "⚙️ Ещё")
 async def more(message: Message) -> None:
     await message.answer(
-        "Дополнительно: QR-код можно получить из карточки коробки. Экспорт в PDF будет добавлен позже.",
-        reply_markup=main_menu(),
+        "Дополнительные действия.",
+        reply_markup=more_keyboard(),
     )
+
+
+@router.message(F.text == BTN_EXPORT_PDF)
+async def export_pdf(message: Message, config: Config, bot: Bot) -> None:
+    boxes = await database.list_all_boxes(config.database_path)
+    if not boxes:
+        await message.answer("Коробок пока нет.", reply_markup=main_menu())
+        return
+
+    await message.answer("Готовлю PDF-файл.", reply_markup=main_menu())
+    filename = f"boxes-export-{datetime.now():%Y-%m-%d}.pdf"
+    with tempfile.TemporaryDirectory(prefix="box-bot-pdf-") as temp_dir:
+        pdf_path = Path(temp_dir) / filename
+        generate_boxes_pdf(boxes, pdf_path)
+        await bot.send_document(
+            chat_id=message.chat.id,
+            document=FSInputFile(pdf_path),
+            caption=f"Экспорт коробок: {len(boxes)}",
+        )
 
 
 @router.message(F.voice)

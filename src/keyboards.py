@@ -7,6 +7,7 @@ BTN_NEW_BOX = "📦 Новая коробка"
 BTN_SEARCH = "🔍 Найти вещь"
 BTN_LIST = "📋 Список коробок"
 BTN_MORE = "⚙️ Ещё"
+BTN_EXPORT_PDF = "📄 Экспорт в PDF"
 BTN_SKIP_PHOTO = "Пропустить фото"
 BTN_DONE_PHOTOS = "Готово"
 BTN_CANCEL = "Отмена"
@@ -37,6 +38,18 @@ def photos_keyboard() -> ReplyKeyboardMarkup:
             [KeyboardButton(text=BTN_CANCEL)],
         ],
         resize_keyboard=True,
+    )
+
+
+def more_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=BTN_EXPORT_PDF)],
+            [KeyboardButton(text=BTN_NEW_BOX), KeyboardButton(text=BTN_SEARCH)],
+            [KeyboardButton(text=BTN_LIST), KeyboardButton(text=BTN_MORE)],
+        ],
+        resize_keyboard=True,
+        input_field_placeholder="Дополнительные действия",
     )
 
 

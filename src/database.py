@@ -326,6 +326,18 @@ async def list_boxes(
         return [await _hydrate_box(db, row) for row in rows]
 
 
+async def list_all_boxes(db_path: Path) -> list[Box]:
+    async with connect_db(db_path) as db:
+        rows = await db.fetchall(
+            """
+            SELECT id, code, room, status, created_at
+            FROM boxes
+            ORDER BY room COLLATE NOCASE, code COLLATE NOCASE, id
+            """
+        )
+        return [await _hydrate_box(db, row) for row in rows]
+
+
 async def list_rooms(db_path: Path) -> list[str]:
     async with connect_db(db_path) as db:
         rows = await db.fetchall("SELECT DISTINCT room FROM boxes ORDER BY room")
