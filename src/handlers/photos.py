@@ -13,8 +13,12 @@ router = Router(name="photos")
 
 
 @router.callback_query(F.data.startswith("box:add_photo:"))
-async def add_photo_start(callback: CallbackQuery, state: FSMContext) -> None:
+async def add_photo_start(callback: CallbackQuery, state: FSMContext, config: Config, household_id: int) -> None:
     box_id = int(callback.data.split(":")[-1])
+    box = await database.get_box_by_id(config.database_path, box_id, household_id)
+    if box is None:
+        await callback.answer("Коробка не найдена.", show_alert=True)
+        return
     await state.set_state(AddPhoto.waiting_for_photos)
     await state.update_data(box_id=box_id, photo_file_ids=[])
     await callback.answer()
@@ -34,19 +38,22 @@ async def add_photo_collect(message: Message, state: FSMContext) -> None:
 
 
 @router.message(AddPhoto.waiting_for_photos, F.text.in_({BTN_DONE_PHOTOS, BTN_SKIP_PHOTO}))
-async def add_photo_finish(message: Message, state: FSMContext, config: Config) -> None:
+async def add_photo_finish(message: Message, state: FSMContext, config: Config, household_id: int) -> None:
     data = await state.get_data()
     box_id = int(data["box_id"])
     photo_file_ids = list(data.get("photo_file_ids", []))
     await state.clear()
 
     if photo_file_ids:
-        await database.add_photos(config.database_path, box_id, photo_file_ids)
+        added = await database.add_photos(config.database_path, box_id, household_id, photo_file_ids)
+        if not added:
+            await message.answer("Коробка не найдена.", reply_markup=main_menu())
+            return
         await message.answer("Фото добавлены.", reply_markup=main_menu())
     else:
         await message.answer("Фото не добавлены.", reply_markup=main_menu())
 
-    box = await database.get_box_by_id(config.database_path, box_id)
+    box = await database.get_box_by_id(config.database_path, box_id, household_id)
     if box:
         await send_box_card(message, box)
 

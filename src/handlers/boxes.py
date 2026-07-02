@@ -16,19 +16,25 @@ from ..config import Config
 from ..database import Box, STATUS_LABELS
 from ..keyboards import (
     BTN_CANCEL,
+    BTN_CREATE_HOUSEHOLD,
     BTN_DONE_PHOTOS,
     BTN_EXPORT_PDF,
+    BTN_JOIN_HOUSEHOLD,
+    BTN_MY_GROUP,
     BTN_NEW_BOX,
     BTN_SKIP_PHOTO,
+    confirm_switch_household_keyboard,
     box_actions,
     cancel_keyboard,
+    household_invite_keyboard,
+    household_onboarding_keyboard,
     main_menu,
     more_keyboard,
     photos_keyboard,
 )
 from ..pdf_export import generate_boxes_pdf
 from ..qr import make_qr_file
-from ..states import AddItem, CreateBox
+from ..states import AddItem, CreateBox, HouseholdOnboarding
 
 
 router = Router(name="boxes")
@@ -109,6 +115,10 @@ def box_text(box: Box) -> str:
     )
 
 
+def normalize_invite_code(raw_code: str) -> str:
+    return raw_code.strip().upper()
+
+
 async def send_box_card(message: Message, box: Box) -> None:
     if len(box.photos) == 1:
         await message.answer_photo(
@@ -132,7 +142,13 @@ async def send_box_card(message: Message, box: Box) -> None:
         await message.answer(box_text(box), reply_markup=box_actions(box), parse_mode="HTML")
 
 
-async def finish_create_box(message: Message, state: FSMContext, config: Config, bot_username: str) -> None:
+async def finish_create_box(
+    message: Message,
+    state: FSMContext,
+    config: Config,
+    bot_username: str,
+    household_id: int,
+) -> None:
     data = await state.get_data()
     room = data["room"]
     items = data.get("items", [])
@@ -140,6 +156,7 @@ async def finish_create_box(message: Message, state: FSMContext, config: Config,
 
     box = await database.create_box(
         config.database_path,
+        household_id=household_id,
         prefix=room_prefix(room),
         room=room,
         items=items,
@@ -156,11 +173,69 @@ async def finish_create_box(message: Message, state: FSMContext, config: Config,
     )
 
 
+async def join_by_invite_code(
+    message: Message,
+    config: Config,
+    invite_code: str,
+    current_household: database.Household | None,
+) -> None:
+    code = normalize_invite_code(invite_code)
+    if not re.fullmatch(r"[A-Z0-9]{6}", code):
+        await message.answer("Код приглашения должен состоять из 6 букв или цифр.")
+        return
+
+    target_household = await database.get_household_by_invite_code(config.database_path, code)
+    if target_household is None:
+        await message.answer("Группа с таким кодом не найдена.")
+        return
+
+    if current_household is not None:
+        if current_household.id == target_household.id:
+            await message.answer(f"Ты уже в группе «{html.escape(current_household.name)}».", parse_mode="HTML")
+            return
+        await message.answer(
+            (
+                f"Ты уже в группе «{html.escape(current_household.name)}». "
+                "Присоединение к новой группе означает выход из текущей. Продолжить?"
+            ),
+            reply_markup=confirm_switch_household_keyboard(code),
+            parse_mode="HTML",
+        )
+        return
+
+    joined = await database.join_household(config.database_path, target_household.id, message.from_user.id)
+    if joined is None:
+        await message.answer("Группа с таким кодом не найдена.")
+        return
+    await message.answer(
+        f"Готово. Вы присоединились к группе «{html.escape(joined.name)}».",
+        reply_markup=main_menu(),
+        parse_mode="HTML",
+    )
+
+
 @router.message(CommandStart())
-async def start(message: Message, command: CommandObject, config: Config) -> None:
+async def start(
+    message: Message,
+    command: CommandObject,
+    config: Config,
+    household: database.Household | None = None,
+    household_id: int | None = None,
+) -> None:
+    if command.args and command.args.startswith("join_"):
+        await join_by_invite_code(message, config, command.args.removeprefix("join_"), household)
+        return
+
+    if household_id is None:
+        await message.answer(
+            "Чтобы пользоваться ботом, создайте свою группу или введите код приглашения.",
+            reply_markup=household_onboarding_keyboard(),
+        )
+        return
+
     if command.args and command.args.startswith("box_"):
         code = command.args.removeprefix("box_").strip()
-        box = await database.get_box_by_code(config.database_path, code)
+        box = await database.get_box_by_code(config.database_path, code, household_id)
         if box is None:
             await message.answer("Коробка не найдена.", reply_markup=main_menu())
             return
@@ -173,6 +248,89 @@ async def start(message: Message, command: CommandObject, config: Config) -> Non
     )
 
 
+@router.message(F.text == BTN_CREATE_HOUSEHOLD)
+async def create_household_start(
+    message: Message,
+    state: FSMContext,
+    household: database.Household | None = None,
+) -> None:
+    if household is not None:
+        await message.answer(f"Ты уже в группе «{html.escape(household.name)}».", parse_mode="HTML")
+        return
+    await state.set_state(HouseholdOnboarding.waiting_for_name)
+    await message.answer("Введите название группы.", reply_markup=cancel_keyboard())
+
+
+@router.message(HouseholdOnboarding.waiting_for_name, F.text)
+async def create_household_finish(message: Message, state: FSMContext, config: Config) -> None:
+    if message.text == BTN_CANCEL:
+        await state.clear()
+        await message.answer("Действие отменено.", reply_markup=household_onboarding_keyboard())
+        return
+    name = message.text.strip()
+    if not name:
+        await message.answer("Введите название группы текстом.")
+        return
+    household = await database.create_household(config.database_path, name, message.from_user.id)
+    await state.clear()
+    await message.answer(
+        (
+            f"Группа «{html.escape(household.name)}» создана.\n"
+            f"Код приглашения: <code>{html.escape(household.invite_code)}</code>"
+        ),
+        reply_markup=main_menu(),
+        parse_mode="HTML",
+    )
+
+
+@router.message(F.text == BTN_JOIN_HOUSEHOLD)
+async def join_household_start(message: Message, state: FSMContext) -> None:
+    await state.set_state(HouseholdOnboarding.waiting_for_invite_code)
+    await message.answer("Введите код приглашения.", reply_markup=cancel_keyboard())
+
+
+@router.message(HouseholdOnboarding.waiting_for_invite_code, F.text)
+async def join_household_finish(
+    message: Message,
+    state: FSMContext,
+    config: Config,
+    household: database.Household | None = None,
+) -> None:
+    if message.text == BTN_CANCEL:
+        await state.clear()
+        await message.answer(
+            "Действие отменено.",
+            reply_markup=main_menu() if household else household_onboarding_keyboard(),
+        )
+        return
+    await state.clear()
+    await join_by_invite_code(message, config, message.text, household)
+
+
+@router.callback_query(F.data.startswith("household:switch:"))
+async def switch_household_confirm(callback: CallbackQuery, config: Config) -> None:
+    invite_code = callback.data.split(":")[-1]
+    target_household = await database.get_household_by_invite_code(config.database_path, invite_code)
+    if target_household is None:
+        await callback.answer("Группа не найдена.", show_alert=True)
+        return
+    joined = await database.join_household(config.database_path, target_household.id, callback.from_user.id)
+    await callback.answer("Группа изменена.")
+    if joined and callback.message:
+        await callback.message.answer(
+            f"Теперь ты в группе «{html.escape(joined.name)}».",
+            reply_markup=main_menu(),
+            parse_mode="HTML",
+        )
+
+
+@router.callback_query(F.data == "household:switch_cancel")
+async def switch_household_cancel(callback: CallbackQuery) -> None:
+    await callback.answer("Отменено.")
+    if callback.message:
+        await callback.message.answer("Присоединение отменено.", reply_markup=main_menu())
+
+
 @router.message(Command("help"))
 async def help_command(message: Message) -> None:
     await message.answer(
@@ -182,9 +340,9 @@ async def help_command(message: Message) -> None:
 
 
 @router.message(F.text.regexp(r"^/box_[A-Za-z0-9]+-\d{2,}$"))
-async def legacy_box_command(message: Message, config: Config) -> None:
+async def legacy_box_command(message: Message, config: Config, household_id: int) -> None:
     code = message.text.removeprefix("/box_").strip()
-    box = await database.get_box_by_code(config.database_path, code)
+    box = await database.get_box_by_code(config.database_path, code, household_id)
     if box is None:
         await message.answer("Коробка не найдена.", reply_markup=main_menu())
         return
@@ -247,8 +405,14 @@ async def create_box_photo(message: Message, state: FSMContext) -> None:
 
 
 @router.message(CreateBox.photos, F.text.in_({BTN_SKIP_PHOTO, BTN_DONE_PHOTOS}))
-async def create_box_finish(message: Message, state: FSMContext, config: Config, bot_username: str) -> None:
-    await finish_create_box(message, state, config, bot_username)
+async def create_box_finish(
+    message: Message,
+    state: FSMContext,
+    config: Config,
+    bot_username: str,
+    household_id: int,
+) -> None:
+    await finish_create_box(message, state, config, bot_username, household_id)
 
 
 @router.message(CreateBox.photos)
@@ -257,9 +421,9 @@ async def create_box_photo_unknown(message: Message) -> None:
 
 
 @router.callback_query(F.data.startswith("box:show:"))
-async def show_box_callback(callback: CallbackQuery, config: Config) -> None:
+async def show_box_callback(callback: CallbackQuery, config: Config, household_id: int) -> None:
     box_id = int(callback.data.split(":")[-1])
-    box = await database.get_box_by_id(config.database_path, box_id)
+    box = await database.get_box_by_id(config.database_path, box_id, household_id)
     if box is None:
         await callback.answer("Коробка не найдена.", show_alert=True)
         return
@@ -268,8 +432,12 @@ async def show_box_callback(callback: CallbackQuery, config: Config) -> None:
 
 
 @router.callback_query(F.data.startswith("box:add_item:"))
-async def add_item_start(callback: CallbackQuery, state: FSMContext) -> None:
+async def add_item_start(callback: CallbackQuery, state: FSMContext, config: Config, household_id: int) -> None:
     box_id = int(callback.data.split(":")[-1])
+    box = await database.get_box_by_id(config.database_path, box_id, household_id)
+    if box is None:
+        await callback.answer("Коробка не найдена.", show_alert=True)
+        return
     await state.set_state(AddItem.waiting_for_items)
     await state.update_data(box_id=box_id)
     await callback.answer()
@@ -286,7 +454,7 @@ async def add_item_voice_stub(message: Message) -> None:
 
 
 @router.message(AddItem.waiting_for_items, F.text)
-async def add_item_finish(message: Message, state: FSMContext, config: Config) -> None:
+async def add_item_finish(message: Message, state: FSMContext, config: Config, household_id: int) -> None:
     data = await state.get_data()
     box_id = int(data["box_id"])
     items = split_items(message.text)
@@ -294,22 +462,25 @@ async def add_item_finish(message: Message, state: FSMContext, config: Config) -
         await message.answer("Не удалось найти вещи в сообщении. Пришлите список текстом.")
         return
 
-    await database.add_items(config.database_path, box_id, items)
+    added = await database.add_items(config.database_path, box_id, household_id, items)
     await state.clear()
-    box = await database.get_box_by_id(config.database_path, box_id)
+    if not added:
+        await message.answer("Коробка не найдена.", reply_markup=main_menu())
+        return
+    box = await database.get_box_by_id(config.database_path, box_id, household_id)
     await message.answer("Вещи добавлены.", reply_markup=main_menu())
     if box:
         await send_box_card(message, box)
 
 
 @router.callback_query(F.data.startswith("box:delete:"))
-async def delete_box_callback(callback: CallbackQuery, config: Config) -> None:
+async def delete_box_callback(callback: CallbackQuery, config: Config, household_id: int) -> None:
     box_id = int(callback.data.split(":")[-1])
-    box = await database.get_box_by_id(config.database_path, box_id)
+    box = await database.get_box_by_id(config.database_path, box_id, household_id)
     if box is None:
         await callback.answer("Коробка не найдена.", show_alert=True)
         return
-    await database.delete_box(config.database_path, box_id)
+    await database.delete_box(config.database_path, box_id, household_id)
     await callback.answer("Коробка удалена.")
     await callback.message.answer(
         f"Коробка {box_code_html(box.code)} удалена.",
@@ -319,9 +490,9 @@ async def delete_box_callback(callback: CallbackQuery, config: Config) -> None:
 
 
 @router.callback_query(F.data.startswith("box:qr:"))
-async def send_qr_callback(callback: CallbackQuery, config: Config, bot_username: str) -> None:
+async def send_qr_callback(callback: CallbackQuery, config: Config, bot_username: str, household_id: int) -> None:
     box_id = int(callback.data.split(":")[-1])
-    box = await database.get_box_by_id(config.database_path, box_id)
+    box = await database.get_box_by_id(config.database_path, box_id, household_id)
     if box is None:
         await callback.answer("Коробка не найдена.", show_alert=True)
         return
@@ -341,9 +512,38 @@ async def more(message: Message) -> None:
     )
 
 
+@router.message(F.text == BTN_MY_GROUP)
+async def my_group(message: Message, config: Config, household: database.Household) -> None:
+    members = await database.list_household_members(config.database_path, household.id)
+    member_rows = "\n".join(
+        f"• {html.escape(member.name) if member.name else member.user_id}" for member in members
+    )
+    await message.answer(
+        (
+            f"👥 <b>{html.escape(household.name)}</b>\n\n"
+            f"Участники:\n{member_rows or 'пока нет'}"
+        ),
+        reply_markup=household_invite_keyboard(),
+        parse_mode="HTML",
+    )
+
+
+@router.callback_query(F.data == "household:invite")
+async def household_invite(callback: CallbackQuery, household: database.Household, bot_username: str) -> None:
+    link = f"https://t.me/{bot_username}?start=join_{household.invite_code}"
+    await callback.answer()
+    await callback.message.answer(
+        (
+            f"Код приглашения: <code>{html.escape(household.invite_code)}</code>\n"
+            f"Ссылка для входа: {html.escape(link)}"
+        ),
+        parse_mode="HTML",
+    )
+
+
 @router.message(F.text == BTN_EXPORT_PDF)
-async def export_pdf(message: Message, config: Config, bot: Bot) -> None:
-    boxes = await database.list_all_boxes(config.database_path)
+async def export_pdf(message: Message, config: Config, bot: Bot, household_id: int) -> None:
+    boxes = await database.list_all_boxes(config.database_path, household_id)
     if not boxes:
         await message.answer("Коробок пока нет.", reply_markup=main_menu())
         return

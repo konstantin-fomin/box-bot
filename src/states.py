@@ -17,3 +17,8 @@ class AddPhoto(StatesGroup):
 
 class Search(StatesGroup):
     waiting_for_query = State()
+
+
+class HouseholdOnboarding(StatesGroup):
+    waiting_for_name = State()
+    waiting_for_invite_code = State()

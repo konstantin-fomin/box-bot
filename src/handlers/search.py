@@ -36,8 +36,15 @@ def boxes_list_text(title: str, boxes: list[Box]) -> str:
     return f"{title}\n{rows}"
 
 
-async def send_boxes_list(message: Message, config: Config, *, status: str | None = None, room: str | None = None) -> None:
-    boxes = await database.list_boxes(config.database_path, status=status, room=room)
+async def send_boxes_list(
+    message: Message,
+    config: Config,
+    *,
+    household_id: int,
+    status: str | None = None,
+    room: str | None = None,
+) -> None:
+    boxes = await database.list_boxes(config.database_path, household_id=household_id, status=status, room=room)
     if not boxes:
         await message.answer("Коробок по этому фильтру нет.", reply_markup=main_menu())
         return
@@ -55,14 +62,14 @@ async def search_start(message: Message, state: FSMContext) -> None:
 
 
 @router.message(Search.waiting_for_query, F.text)
-async def search_finish(message: Message, state: FSMContext, config: Config) -> None:
+async def search_finish(message: Message, state: FSMContext, config: Config, household_id: int) -> None:
     query = normalize_search_query(message.text)
     if not query:
         await message.answer("Введите название вещи для поиска.")
         return
 
     await state.clear()
-    boxes = await database.search_boxes(config.database_path, query)
+    boxes = await database.search_boxes(config.database_path, query, household_id)
     if not boxes:
         await message.answer("Ничего не найдено.", reply_markup=main_menu())
         return
@@ -73,9 +80,9 @@ async def search_finish(message: Message, state: FSMContext, config: Config) -> 
 
 
 @router.message(F.text.regexp(r"(?i)^где\s+.+"))
-async def search_by_phrase(message: Message, config: Config) -> None:
+async def search_by_phrase(message: Message, config: Config, household_id: int) -> None:
     query = normalize_search_query(message.text)
-    boxes = await database.search_boxes(config.database_path, query)
+    boxes = await database.search_boxes(config.database_path, query, household_id)
     if not boxes:
         await message.answer("Ничего не найдено.", reply_markup=main_menu())
         return
@@ -85,15 +92,15 @@ async def search_by_phrase(message: Message, config: Config) -> None:
 
 
 @router.message(F.text == BTN_LIST)
-async def list_start(message: Message, config: Config) -> None:
-    rooms = await database.list_rooms(config.database_path)
+async def list_start(message: Message, config: Config, household_id: int) -> None:
+    rooms = await database.list_rooms(config.database_path, household_id)
     await message.answer("Фильтры списка:", reply_markup=list_filters_keyboard(rooms))
-    await send_boxes_list(message, config)
+    await send_boxes_list(message, config, household_id=household_id)
 
 
 @router.callback_query(F.data == "list:all")
-async def list_all(callback: CallbackQuery, config: Config) -> None:
-    boxes = await database.list_boxes(config.database_path)
+async def list_all(callback: CallbackQuery, config: Config, household_id: int) -> None:
+    boxes = await database.list_boxes(config.database_path, household_id=household_id)
     await callback.answer()
     if not boxes:
         await callback.message.answer("Коробок пока нет.", reply_markup=main_menu())
@@ -112,9 +119,9 @@ async def list_statuses(callback: CallbackQuery) -> None:
 
 
 @router.callback_query(F.data.startswith("list:status:"))
-async def list_by_status(callback: CallbackQuery, config: Config) -> None:
+async def list_by_status(callback: CallbackQuery, config: Config, household_id: int) -> None:
     status = callback.data.split(":")[-1]
-    boxes = await database.list_boxes(config.database_path, status=status)
+    boxes = await database.list_boxes(config.database_path, household_id=household_id, status=status)
     await callback.answer()
     if not boxes:
         await callback.message.answer(f"Коробок со статусом «{STATUS_LABELS.get(status, status)}» нет.")
@@ -127,9 +134,9 @@ async def list_by_status(callback: CallbackQuery, config: Config) -> None:
 
 
 @router.callback_query(F.data.startswith("list:room:"))
-async def list_by_room(callback: CallbackQuery, config: Config) -> None:
+async def list_by_room(callback: CallbackQuery, config: Config, household_id: int) -> None:
     room = callback.data.removeprefix("list:room:")
-    boxes = await database.list_boxes(config.database_path, room=room)
+    boxes = await database.list_boxes(config.database_path, household_id=household_id, room=room)
     await callback.answer()
     if not boxes:
         await callback.message.answer(f"В комнате «{room}» коробок нет.")

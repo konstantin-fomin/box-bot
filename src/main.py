@@ -21,7 +21,7 @@ from aiogram.types import ErrorEvent
 from src.config import Config, load_config
 from src.database import init_db
 from src.handlers import setup_routers
-from src.middlewares import WhitelistMiddleware
+from src.middlewares import HouseholdMembershipMiddleware
 
 
 _T = TypeVar("_T")
@@ -117,9 +117,9 @@ async def main() -> None:
     )
     dp = Dispatcher(storage=MemoryStorage())
 
-    whitelist = WhitelistMiddleware(config)
-    dp.message.outer_middleware(whitelist)
-    dp.callback_query.outer_middleware(whitelist)
+    membership = HouseholdMembershipMiddleware(config)
+    dp.message.outer_middleware(membership)
+    dp.callback_query.outer_middleware(membership)
     dp.errors.register(on_error)
     dp.include_router(setup_routers())
 

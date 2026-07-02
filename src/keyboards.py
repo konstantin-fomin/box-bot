@@ -8,6 +8,9 @@ BTN_SEARCH = "🔍 Найти вещь"
 BTN_LIST = "📋 Список коробок"
 BTN_MORE = "⚙️ Ещё"
 BTN_EXPORT_PDF = "📄 Экспорт в PDF"
+BTN_MY_GROUP = "👥 Моя группа"
+BTN_CREATE_HOUSEHOLD = "🏠 Создать свою группу"
+BTN_JOIN_HOUSEHOLD = "🔑 У меня есть код приглашения"
 BTN_SKIP_PHOTO = "Пропустить фото"
 BTN_DONE_PHOTOS = "Готово"
 BTN_CANCEL = "Отмена"
@@ -44,12 +47,42 @@ def photos_keyboard() -> ReplyKeyboardMarkup:
 def more_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text=BTN_EXPORT_PDF)],
+            [KeyboardButton(text=BTN_MY_GROUP), KeyboardButton(text=BTN_EXPORT_PDF)],
             [KeyboardButton(text=BTN_NEW_BOX), KeyboardButton(text=BTN_SEARCH)],
             [KeyboardButton(text=BTN_LIST), KeyboardButton(text=BTN_MORE)],
         ],
         resize_keyboard=True,
         input_field_placeholder="Дополнительные действия",
+    )
+
+
+def household_onboarding_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=BTN_CREATE_HOUSEHOLD)],
+            [KeyboardButton(text=BTN_JOIN_HOUSEHOLD)],
+        ],
+        resize_keyboard=True,
+        input_field_placeholder="Выберите действие",
+    )
+
+
+def confirm_switch_household_keyboard(invite_code: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="Да", callback_data=f"household:switch:{invite_code}"),
+                InlineKeyboardButton(text="Отмена", callback_data="household:switch_cancel"),
+            ]
+        ]
+    )
+
+
+def household_invite_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="➕ Пригласить друга", callback_data="household:invite")],
+        ]
     )
 
 

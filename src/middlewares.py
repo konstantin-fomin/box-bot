@@ -5,10 +5,12 @@ from aiogram import BaseMiddleware
 from aiogram.types import CallbackQuery, Message, TelegramObject
 
 from .config import Config
-from .database import upsert_user
+from .database import get_user_household, upsert_user
+from .keyboards import BTN_CREATE_HOUSEHOLD, BTN_JOIN_HOUSEHOLD, household_onboarding_keyboard
+from .states import HouseholdOnboarding
 
 
-class WhitelistMiddleware(BaseMiddleware):
+class HouseholdMembershipMiddleware(BaseMiddleware):
     def __init__(self, config: Config) -> None:
         self.config = config
 
@@ -27,13 +29,40 @@ class WhitelistMiddleware(BaseMiddleware):
         if user is None:
             return await handler(event, data)
 
-        if user.id not in self.config.whitelist_user_ids:
-            if isinstance(event, Message):
-                await event.answer("Доступ запрещён.")
-            elif isinstance(event, CallbackQuery):
-                await event.answer("Доступ запрещён.", show_alert=True)
-            return None
-
         full_name = user.full_name if user.full_name else user.username
         await upsert_user(self.config.database_path, user.id, full_name)
-        return await handler(event, data)
+
+        household = await get_user_household(self.config.database_path, user.id)
+        data["household"] = household
+        data["household_id"] = household.id if household else None
+
+        if household is not None:
+            return await handler(event, data)
+
+        if isinstance(event, Message) and await self._is_onboarding_message(event, data):
+            return await handler(event, data)
+
+        if isinstance(event, CallbackQuery):
+            await event.answer("Сначала создайте группу или присоединитесь по коду.", show_alert=True)
+            return None
+
+        if isinstance(event, Message):
+            await event.answer(
+                "Чтобы пользоваться ботом, создайте свою группу или введите код приглашения.",
+                reply_markup=household_onboarding_keyboard(),
+            )
+        return None
+
+    async def _is_onboarding_message(self, event: Message, data: dict[str, Any]) -> bool:
+        text = event.text or ""
+        state = data.get("state")
+        current_state = await state.get_state() if state else None
+        return (
+            text.startswith("/start")
+            or text in {BTN_CREATE_HOUSEHOLD, BTN_JOIN_HOUSEHOLD}
+            or current_state
+            in {
+                HouseholdOnboarding.waiting_for_name.state,
+                HouseholdOnboarding.waiting_for_invite_code.state,
+            }
+        )
