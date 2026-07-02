@@ -1,6 +1,6 @@
 # Telegram-бот "Коробки"
 
-Бот для учёта коробок при переезде: создание коробок, список вещей, фото через Telegram `file_id`, поиск, статусы и QR-коды с deep link на карточку коробки.
+Бот для учёта коробок при переезде: создание групп, коробок, списков вещей, фото через Telegram `file_id`, поиск, статусы и QR-коды с deep link на карточку коробки.
 
 ## Локальный запуск
 
@@ -37,10 +37,15 @@ python -m src.main
 
 В Telegram:
 - `/start`
+- `/help`
+- `🏠 Создать свою группу` или `🔑 У меня есть код приглашения`
 - `📦 Новая коробка`
 - `🔍 Найти вещь`
 - `📋 Список коробок`
+- `⚙️ Ещё` → `👥 Моя группа`
 - `где блендер?`
+
+Новый пользователь при первом `/start` видит приветствие и выбирает: создать свою группу или присоединиться по invite-коду. Пользователь в группе сразу получает главное меню. `/help` доступна и до вступления в группу.
 
 ## systemd-деплой
 
@@ -98,11 +103,11 @@ tail -f /opt/box-bot/logs/bot.log
 
 ## Troubleshooting
 
-### `aiosqlite.connect()` зависает в sandbox-среде
+### SQLite зависает в sandbox-среде
 
-В ограниченной sandbox-среде, где разрабатывался проект, минимальный вызов `aiosqlite.connect()` мог зависать до выполнения SQL. Это ограничение окружения, а не ожидаемое поведение на обычном VPS. В коде добавлены:
+В ограниченной sandbox-среде, где разрабатывался проект, SQLite-операции могли зависать до выполнения SQL. Это ограничение окружения, а не ожидаемое поведение на обычном VPS. В коде используется стандартный `sqlite3` в single-worker executor, а также добавлены:
 - явное создание папки `data/` перед подключением к SQLite;
-- `timeout=10` для `aiosqlite.connect()`;
+- `timeout=10` для подключения к SQLite;
 - ограничение ожидания подключения и понятная ошибка в лог `logs/bot.log`.
 
 Для реального теста на VPS выполните:
@@ -113,19 +118,21 @@ source .venv/bin/activate
 python - <<'PY'
 import asyncio
 from pathlib import Path
-from src.database import init_db, create_box, search_boxes
+from src.database import create_box, create_household, init_db, search_boxes
 
 async def main():
     db_path = Path("data/boxes.db")
     await init_db(db_path)
+    household = await create_household(db_path, "Тестовая группа", 123456789)
     box = await create_box(
         db_path,
+        household_id=household.id,
         prefix="TEST",
         room="Тест",
         items=["проверочная вещь"],
         photo_file_ids=[],
     )
-    found = await search_boxes(db_path, "проверочная")
+    found = await search_boxes(db_path, "проверочная", household.id)
     print(box.code, len(found))
 
 asyncio.run(main())
