@@ -9,7 +9,7 @@ from pathlib import Path
 from aiogram import Bot, F, Router
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, FSInputFile, Message
+from aiogram.types import CallbackQuery, FSInputFile, InputMediaPhoto, Message
 
 from .. import database
 from ..config import Config
@@ -32,6 +32,7 @@ from ..states import AddItem, CreateBox
 
 
 router = Router(name="boxes")
+MAX_MEDIA_GROUP_PHOTOS = 10
 
 
 TRANSLIT = {
@@ -109,13 +110,24 @@ def box_text(box: Box) -> str:
 
 
 async def send_box_card(message: Message, box: Box) -> None:
-    if box.photos:
+    if len(box.photos) == 1:
         await message.answer_photo(
             photo=box.photos[0],
             caption=box_text(box),
             reply_markup=box_actions(box),
             parse_mode="HTML",
         )
+    elif len(box.photos) > 1:
+        media = [
+            InputMediaPhoto(
+                media=file_id,
+                caption=box_text(box) if index == 0 else None,
+                parse_mode="HTML" if index == 0 else None,
+            )
+            for index, file_id in enumerate(box.photos[:MAX_MEDIA_GROUP_PHOTOS])
+        ]
+        await message.bot.send_media_group(chat_id=message.chat.id, media=media)
+        await message.answer("Действия с коробкой:", reply_markup=box_actions(box))
     else:
         await message.answer(box_text(box), reply_markup=box_actions(box), parse_mode="HTML")
 
