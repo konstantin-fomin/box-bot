@@ -90,13 +90,15 @@ def setup_logging(config: Config) -> None:
 async def on_error(event: ErrorEvent) -> bool:
     logging.exception("Ошибка при обработке обновления", exc_info=event.exception)
     try:
-        if event.update.callback_query:
-            callback = event.update.callback_query
+        update = getattr(event, "update", None)
+        callback = getattr(update, "callback_query", None)
+        message = getattr(update, "message", None)
+        if callback:
             await callback.answer("что-то пошло не так", show_alert=True)
             if callback.message:
                 await callback.message.answer("что-то пошло не так")
-        elif event.update.message:
-            await event.update.message.answer("что-то пошло не так")
+        elif message:
+            await message.answer("что-то пошло не так")
     except Exception:
         logging.exception("Не удалось отправить сообщение об ошибке пользователю")
     return True

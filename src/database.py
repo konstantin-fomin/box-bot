@@ -58,7 +58,8 @@ CREATE TABLE IF NOT EXISTS photos (
 
 CREATE TABLE IF NOT EXISTS users (
     user_id INTEGER PRIMARY KEY,
-    name TEXT
+    name TEXT,
+    welcome_seen INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS room_counters (
@@ -246,7 +247,14 @@ async def init_db(db_path: Path) -> None:
     async with connect_db(db_path) as db:
         await _wait_for_db(db.execute("PRAGMA foreign_keys = ON"), "PRAGMA foreign_keys", db_path)
         await _wait_for_db(db.executescript(_MIGRATIONS_SQL), "миграции", db_path)
+        await _wait_for_db(_ensure_user_columns(db), "миграции users", db_path)
         await _wait_for_db(db.commit(), "commit миграций", db_path)
+
+
+async def _ensure_user_columns(db: Database) -> None:
+    columns = await db.fetchall("PRAGMA table_info(users)")
+    if "welcome_seen" not in {column["name"] for column in columns}:
+        await db.execute("ALTER TABLE users ADD COLUMN welcome_seen INTEGER NOT NULL DEFAULT 0")
 
 
 async def upsert_user(db_path: Path, user_id: int, name: str | None) -> None:
@@ -258,6 +266,25 @@ async def upsert_user(db_path: Path, user_id: int, name: str | None) -> None:
             ON CONFLICT(user_id) DO UPDATE SET name = excluded.name
             """,
             (user_id, name),
+        )
+        await db.commit()
+
+
+async def has_user_seen_welcome(db_path: Path, user_id: int) -> bool:
+    async with connect_db(db_path) as db:
+        row = await db.fetchone("SELECT welcome_seen FROM users WHERE user_id = ?", (user_id,))
+        return bool(row["welcome_seen"]) if row else False
+
+
+async def mark_user_welcome_seen(db_path: Path, user_id: int) -> None:
+    async with connect_db(db_path) as db:
+        await db.execute(
+            """
+            INSERT INTO users (user_id, welcome_seen)
+            VALUES (?, 1)
+            ON CONFLICT(user_id) DO UPDATE SET welcome_seen = 1
+            """,
+            (user_id,),
         )
         await db.commit()
 

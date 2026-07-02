@@ -71,7 +71,7 @@ def confirm_switch_household_keyboard(invite_code: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="Да", callback_data=f"household:switch:{invite_code}"),
+                InlineKeyboardButton(text="Да, перейти", callback_data=f"household:switch:{invite_code}"),
                 InlineKeyboardButton(text="Отмена", callback_data="household:switch_cancel"),
             ]
         ]

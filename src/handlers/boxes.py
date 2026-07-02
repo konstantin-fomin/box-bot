@@ -40,6 +40,27 @@ from ..states import AddItem, CreateBox, HouseholdOnboarding
 router = Router(name="boxes")
 MAX_MEDIA_GROUP_PHOTOS = 10
 
+WELCOME_TEXT = """👋 Привет! Я бот-органайзер для переезда.
+
+Помогаю не забыть, что где лежит:
+📦 записываю содержимое каждой коробки
+🔍 нахожу нужную коробку по одной фразе — "где блендер?"
+🖨 делаю QR-коды для наклеек на коробки
+
+Все твои коробки видны только тебе и людям в твоей группе (например семье) — никто посторонний их не увидит.
+
+Для начала:"""
+
+HELP_TEXT = """📦 Как пользоваться ботом:
+
+- "Новая коробка" — создать коробку, указать комнату и вещи внутри
+- "Найти вещь" — написать название вещи, бот скажет в какой она коробке
+- "Список коробок" — увидеть все свои коробки
+- В карточке коробки можно добавить фото, сменить статус, удалить
+
+👥 Группа:
+- "Моя группа" в разделе "Ещё" — посмотреть участников и пригласить друга"""
+
 
 TRANSLIT = {
     "а": "a",
@@ -196,7 +217,8 @@ async def join_by_invite_code(
         await message.answer(
             (
                 f"Ты уже в группе «{html.escape(current_household.name)}». "
-                "Присоединение к новой группе означает выход из текущей. Продолжить?"
+                "Присоединиться к новой группе означает выйти из текущей — все твои коробки останутся "
+                "в старой группе, но ты потеряешь к ним доступ. Продолжить?"
             ),
             reply_markup=confirm_switch_household_keyboard(code),
             parse_mode="HTML",
@@ -221,16 +243,22 @@ async def start(
     config: Config,
     household: database.Household | None = None,
     household_id: int | None = None,
+    welcome_seen: bool = True,
 ) -> None:
     if command.args and command.args.startswith("join_"):
         await join_by_invite_code(message, config, command.args.removeprefix("join_"), household)
         return
 
     if household_id is None:
+        text = WELCOME_TEXT
+        if welcome_seen:
+            text = "Чтобы пользоваться ботом, создайте свою группу или введите код приглашения."
         await message.answer(
-            "Чтобы пользоваться ботом, создайте свою группу или введите код приглашения.",
+            text,
             reply_markup=household_onboarding_keyboard(),
         )
+        if not welcome_seen:
+            await database.mark_user_welcome_seen(config.database_path, message.from_user.id)
         return
 
     if command.args and command.args.startswith("box_"):
@@ -332,10 +360,10 @@ async def switch_household_cancel(callback: CallbackQuery) -> None:
 
 
 @router.message(Command("help"))
-async def help_command(message: Message) -> None:
+async def help_command(message: Message, household: database.Household | None = None) -> None:
     await message.answer(
-        "Доступные действия: создать коробку, найти вещь, открыть список коробок или отсканировать QR-код.",
-        reply_markup=main_menu(),
+        HELP_TEXT,
+        reply_markup=main_menu() if household else household_onboarding_keyboard(),
     )
 
 

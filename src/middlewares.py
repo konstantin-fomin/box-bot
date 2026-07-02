@@ -5,7 +5,7 @@ from aiogram import BaseMiddleware
 from aiogram.types import CallbackQuery, Message, TelegramObject
 
 from .config import Config
-from .database import get_user_household, upsert_user
+from .database import get_user_household, has_user_seen_welcome, upsert_user
 from .keyboards import BTN_CREATE_HOUSEHOLD, BTN_JOIN_HOUSEHOLD, household_onboarding_keyboard
 from .states import HouseholdOnboarding
 
@@ -35,6 +35,7 @@ class HouseholdMembershipMiddleware(BaseMiddleware):
         household = await get_user_household(self.config.database_path, user.id)
         data["household"] = household
         data["household_id"] = household.id if household else None
+        data["welcome_seen"] = await has_user_seen_welcome(self.config.database_path, user.id)
 
         if household is not None:
             return await handler(event, data)
@@ -59,6 +60,7 @@ class HouseholdMembershipMiddleware(BaseMiddleware):
         current_state = await state.get_state() if state else None
         return (
             text.startswith("/start")
+            or text.startswith("/help")
             or text in {BTN_CREATE_HOUSEHOLD, BTN_JOIN_HOUSEHOLD}
             or current_state
             in {
