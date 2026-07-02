@@ -85,12 +85,16 @@ def room_prefix(room: str) -> str:
     return prefix.upper()
 
 
+def box_code_html(box_code: str) -> str:
+    return f"<code>{html.escape(box_code)}</code>"
+
+
 def box_text(box: Box) -> str:
     items = "\n".join(f"• {html.escape(item)}" for item in box.items) or "пока не указаны"
     photos_count = len(box.photos)
     photos = f"\nФото: {photos_count}" if photos_count else "\nФото: нет"
     return (
-        f"📦 <b>{html.escape(box.code)}</b>\n"
+        f"📦 {box_code_html(box.code)}\n"
         f"Статус: {STATUS_LABELS.get(box.status, box.status)}\n"
         f"Комната: {html.escape(box.room)}\n"
         f"Вещи:\n{items}"
@@ -104,9 +108,10 @@ async def send_box_card(message: Message, box: Box) -> None:
             photo=box.photos[0],
             caption=box_text(box),
             reply_markup=box_actions(box),
+            parse_mode="HTML",
         )
     else:
-        await message.answer(box_text(box), reply_markup=box_actions(box))
+        await message.answer(box_text(box), reply_markup=box_actions(box), parse_mode="HTML")
 
 
 async def finish_create_box(message: Message, state: FSMContext, config: Config, bot_username: str) -> None:
@@ -124,11 +129,11 @@ async def finish_create_box(message: Message, state: FSMContext, config: Config,
     )
     await state.clear()
 
-    await message.answer("Коробка создана.", reply_markup=main_menu())
+    await message.answer(f"Коробка {box_code_html(box.code)} создана.", reply_markup=main_menu(), parse_mode="HTML")
     await send_box_card(message, box)
     await message.answer_photo(
         photo=make_qr_file(bot_username, box.code),
-        caption=f"QR-код для коробки <code>{html.escape(box.code)}</code>. Его можно распечатать и наклеить на коробку.",
+        caption=f"QR-код для коробки {box_code_html(box.code)}. Его можно распечатать и наклеить на коробку.",
         parse_mode="HTML",
     )
 
@@ -282,9 +287,17 @@ async def add_item_finish(message: Message, state: FSMContext, config: Config) -
 @router.callback_query(F.data.startswith("box:delete:"))
 async def delete_box_callback(callback: CallbackQuery, config: Config) -> None:
     box_id = int(callback.data.split(":")[-1])
+    box = await database.get_box_by_id(config.database_path, box_id)
+    if box is None:
+        await callback.answer("Коробка не найдена.", show_alert=True)
+        return
     await database.delete_box(config.database_path, box_id)
     await callback.answer("Коробка удалена.")
-    await callback.message.answer("Коробка удалена.", reply_markup=main_menu())
+    await callback.message.answer(
+        f"Коробка {box_code_html(box.code)} удалена.",
+        reply_markup=main_menu(),
+        parse_mode="HTML",
+    )
 
 
 @router.callback_query(F.data.startswith("box:qr:"))
@@ -297,7 +310,8 @@ async def send_qr_callback(callback: CallbackQuery, config: Config, bot_username
     await callback.answer()
     await callback.message.answer_photo(
         photo=make_qr_file(bot_username, box.code),
-        caption=f"QR-код для коробки {html.escape(box.code)}.",
+        caption=f"QR-код для коробки {box_code_html(box.code)}.",
+        parse_mode="HTML",
     )
 
 

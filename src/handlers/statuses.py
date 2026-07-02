@@ -4,7 +4,7 @@ from aiogram.types import CallbackQuery
 from .. import database
 from ..config import Config
 from ..keyboards import status_keyboard
-from .boxes import send_box_card
+from .boxes import box_code_html, send_box_card
 
 
 router = Router(name="statuses")
@@ -19,8 +19,9 @@ async def status_start(callback: CallbackQuery, config: Config) -> None:
         return
     await callback.answer()
     await callback.message.answer(
-        f"Выберите новый статус для {box.code}.",
+        f"Выберите новый статус для {box_code_html(box.code)}.",
         reply_markup=status_keyboard(box.id),
+        parse_mode="HTML",
     )
 
 

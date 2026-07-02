@@ -70,8 +70,8 @@ def status_keyboard(box_id: int) -> InlineKeyboardMarkup:
 def boxes_list_keyboard(boxes: list[Box]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text=f"{box.code} · {box.room}", callback_data=f"box:show:{box.id}")]
-            for box in boxes
+            [InlineKeyboardButton(text=f"Открыть {index} · {box.room}", callback_data=f"box:show:{box.id}")]
+            for index, box in enumerate(boxes, start=1)
         ]
     )
 

@@ -1,4 +1,5 @@
 import re
+import html
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
@@ -6,7 +7,7 @@ from aiogram.types import CallbackQuery, Message
 
 from .. import database
 from ..config import Config
-from ..database import STATUS_LABELS
+from ..database import Box, STATUS_LABELS
 from ..keyboards import (
     BTN_LIST,
     BTN_SEARCH,
@@ -17,7 +18,7 @@ from ..keyboards import (
     statuses_filter_keyboard,
 )
 from ..states import Search
-from .boxes import send_box_card
+from .boxes import box_code_html, send_box_card
 
 
 router = Router(name="search")
@@ -30,12 +31,21 @@ def normalize_search_query(text: str) -> str:
     return query
 
 
+def boxes_list_text(title: str, boxes: list[Box]) -> str:
+    rows = "\n".join(f"• {box_code_html(box.code)} · {html.escape(box.room)}" for box in boxes)
+    return f"{title}\n{rows}"
+
+
 async def send_boxes_list(message: Message, config: Config, *, status: str | None = None, room: str | None = None) -> None:
     boxes = await database.list_boxes(config.database_path, status=status, room=room)
     if not boxes:
         await message.answer("Коробок по этому фильтру нет.", reply_markup=main_menu())
         return
-    await message.answer("Выберите коробку:", reply_markup=boxes_list_keyboard(boxes))
+    await message.answer(
+        boxes_list_text("Выберите коробку:", boxes),
+        reply_markup=boxes_list_keyboard(boxes),
+        parse_mode="HTML",
+    )
 
 
 @router.message(F.text == BTN_SEARCH)
@@ -88,7 +98,11 @@ async def list_all(callback: CallbackQuery, config: Config) -> None:
     if not boxes:
         await callback.message.answer("Коробок пока нет.", reply_markup=main_menu())
         return
-    await callback.message.answer("Все коробки:", reply_markup=boxes_list_keyboard(boxes))
+    await callback.message.answer(
+        boxes_list_text("Все коробки:", boxes),
+        reply_markup=boxes_list_keyboard(boxes),
+        parse_mode="HTML",
+    )
 
 
 @router.callback_query(F.data == "list:statuses")
@@ -106,8 +120,9 @@ async def list_by_status(callback: CallbackQuery, config: Config) -> None:
         await callback.message.answer(f"Коробок со статусом «{STATUS_LABELS.get(status, status)}» нет.")
         return
     await callback.message.answer(
-        f"Коробки со статусом «{STATUS_LABELS.get(status, status)}»:",
+        boxes_list_text(f"Коробки со статусом «{STATUS_LABELS.get(status, status)}»:", boxes),
         reply_markup=boxes_list_keyboard(boxes),
+        parse_mode="HTML",
     )
 
 
@@ -120,6 +135,7 @@ async def list_by_room(callback: CallbackQuery, config: Config) -> None:
         await callback.message.answer(f"В комнате «{room}» коробок нет.")
         return
     await callback.message.answer(
-        f"Коробки в комнате «{room}»:",
+        boxes_list_text(f"Коробки в комнате «{html.escape(room)}»:", boxes),
         reply_markup=boxes_list_keyboard(boxes),
+        parse_mode="HTML",
     )
