@@ -90,15 +90,12 @@ After pushing changes to GitHub for this project, deploy them on the VPS as the 
 ```bash
 cd /root/projects/box-bot
 git pull origin main
-git diff HEAD@{1} HEAD -- requirements.txt
-venv/bin/pip install -r requirements.txt  # only if requirements.txt changed
-sudo systemctl restart box-bot
-sleep 3
-sudo systemctl status box-bot
-tail -15 logs/systemd.log
+docker compose build
+docker compose up -d
+docker compose logs --tail 20
 ```
 
-Confirm that `box-bot` is `active (running)`. If it is `failed`, show `journalctl -u box-bot -n 50` and wait for user instructions instead of trying to fix it automatically.
+Confirm that `docker compose ps` shows the `box-bot` service as running. If it exits or restarts repeatedly, show `docker compose logs --tail 50` and wait for user instructions instead of trying to fix it automatically.
 
 ## Testing Guidance
 
