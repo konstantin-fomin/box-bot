@@ -21,10 +21,9 @@ FONT_BOLD = "DejaVuSans-Bold"
 FONT_PATH = Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
 FONT_BOLD_PATH = Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")
 PDF_STATUS_LABELS = {
-    "home": "дома",
-    "storage": "склад",
-    "moving": "в пути",
-    "unpacked": "распаковано",
+    "with_me": "с собой",
+    "store": "хранить",
+    "send_if_needed": "прислать по необходимости",
 }
 
 
@@ -36,7 +35,7 @@ def _register_fonts() -> None:
 
 
 def _box_tag(box: Box) -> str:
-    return "на хранение" if box.status == "storage" else "едет с нами"
+    return PDF_STATUS_LABELS.get(box.status, box.status)
 
 
 def _items_text(box: Box) -> str:

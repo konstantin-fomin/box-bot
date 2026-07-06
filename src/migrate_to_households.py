@@ -9,7 +9,7 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.config import load_config
-from src.database import generate_invite_code, utc_now
+from src.database import LEGACY_STATUS_MAP, generate_invite_code, utc_now
 
 
 FIRST_HOUSEHOLD_NAME = "Семья Фоминых"
@@ -93,7 +93,7 @@ def rebuild_boxes(conn: sqlite3.Connection, default_household_id: int) -> None:
             household_id INTEGER NOT NULL,
             code TEXT NOT NULL,
             room TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT 'home',
+            status TEXT NOT NULL DEFAULT 'with_me',
             created_at TEXT NOT NULL,
             FOREIGN KEY (household_id) REFERENCES households(id) ON DELETE CASCADE,
             UNIQUE (household_id, code)
@@ -110,6 +110,8 @@ def rebuild_boxes(conn: sqlite3.Connection, default_household_id: int) -> None:
             """,
             (default_household_id,),
         )
+        for old_status, new_status in LEGACY_STATUS_MAP.items():
+            conn.execute("UPDATE boxes_new SET status = ? WHERE status = ?", (new_status, old_status))
         conn.execute("DROP TABLE boxes")
     conn.execute("ALTER TABLE boxes_new RENAME TO boxes")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_boxes_household_id ON boxes(household_id)")

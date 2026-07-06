@@ -29,7 +29,11 @@ async def status_start(callback: CallbackQuery, config: Config, household_id: in
 async def status_set(callback: CallbackQuery, config: Config, household_id: int) -> None:
     _, _, box_id_raw, status = callback.data.split(":")
     box_id = int(box_id_raw)
-    updated = await database.update_status(config.database_path, box_id, household_id, status)
+    try:
+        updated = await database.update_status(config.database_path, box_id, household_id, status)
+    except ValueError:
+        await callback.answer("Этот статус устарел. Откройте выбор статуса заново.", show_alert=True)
+        return
     if not updated:
         await callback.answer("Коробка не найдена.", show_alert=True)
         return

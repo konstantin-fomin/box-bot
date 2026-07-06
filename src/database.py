@@ -20,14 +20,21 @@ LOGGER = logging.getLogger(__name__)
 DB_CONNECT_TIMEOUT_SECONDS = 10
 _T = TypeVar("_T")
 
-STATUSES = ("home", "storage", "moving", "unpacked")
+DEFAULT_STATUS = "with_me"
+STATUSES = ("with_me", "store", "send_if_needed")
 
 
 STATUS_LABELS = {
-    "home": "🏠 дома",
-    "storage": "📦 склад",
-    "moving": "🚚 в пути",
-    "unpacked": "✅ распаковано",
+    "with_me": "🎒 с собой",
+    "store": "📦 хранить",
+    "send_if_needed": "📬 прислать по необходимости",
+}
+
+LEGACY_STATUS_MAP = {
+    "home": "with_me",
+    "storage": "store",
+    "moving": "send_if_needed",
+    "unpacked": "with_me",
 }
 
 _MIGRATIONS_SQL = """
@@ -36,7 +43,7 @@ CREATE TABLE IF NOT EXISTS boxes (
     household_id INTEGER NOT NULL,
     code TEXT NOT NULL,
     room TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'home',
+    status TEXT NOT NULL DEFAULT 'with_me',
     created_at TEXT NOT NULL,
     FOREIGN KEY (household_id) REFERENCES households(id) ON DELETE CASCADE,
     UNIQUE (household_id, code)
@@ -248,6 +255,7 @@ async def init_db(db_path: Path) -> None:
         await _wait_for_db(db.execute("PRAGMA foreign_keys = ON"), "PRAGMA foreign_keys", db_path)
         await _wait_for_db(db.executescript(_MIGRATIONS_SQL), "миграции", db_path)
         await _wait_for_db(_ensure_user_columns(db), "миграции users", db_path)
+        await _wait_for_db(_migrate_legacy_statuses(db), "миграции статусов", db_path)
         await _wait_for_db(db.commit(), "commit миграций", db_path)
 
 
@@ -255,6 +263,11 @@ async def _ensure_user_columns(db: Database) -> None:
     columns = await db.fetchall("PRAGMA table_info(users)")
     if "welcome_seen" not in {column["name"] for column in columns}:
         await db.execute("ALTER TABLE users ADD COLUMN welcome_seen INTEGER NOT NULL DEFAULT 0")
+
+
+async def _migrate_legacy_statuses(db: Database) -> None:
+    for old_status, new_status in LEGACY_STATUS_MAP.items():
+        await db.execute("UPDATE boxes SET status = ? WHERE status = ?", (new_status, old_status))
 
 
 async def upsert_user(db_path: Path, user_id: int, name: str | None) -> None:
@@ -421,7 +434,7 @@ async def create_box(
         code = f"{prefix}-{next_number:02d}"
         cursor = await db.execute(
             "INSERT INTO boxes (household_id, code, room, status, created_at) VALUES (?, ?, ?, ?, ?)",
-            (household_id, code, room, "home", utc_now()),
+            (household_id, code, room, DEFAULT_STATUS, utc_now()),
         )
         box_id = cursor.lastrowid
 

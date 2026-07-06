@@ -96,7 +96,7 @@ SYSTEM_PROMPT = """
 {"action":"search","query":"что искать"}
 {"action":"create_box","room":"комната или категория","items":["вещь 1","вещь 2"]}
 {"action":"add_items","box_id":123,"box_code":"KITCH-01","items":["вещь 1","вещь 2"]}
-{"action":"update_status","box_id":123,"box_code":"KITCH-01","status":"home|storage|moving|unpacked"}
+{"action":"update_status","box_id":123,"box_code":"KITCH-01","status":"with_me|store|send_if_needed"}
 {"action":"delete_box","box_id":123,"box_code":"KITCH-01"}
 
 Для add_items, update_status и delete_box используй только box_id из списка текущих коробок.
@@ -106,10 +106,9 @@ SYSTEM_PROMPT = """
 Сохраняй названия вещей без сокращений и пересказа.
 
 Статусы:
-home — дома
-storage — склад
-moving — в пути
-unpacked — распаковано
+with_me — с собой
+store — хранить
+send_if_needed — прислать по необходимости
 """.strip()
 
 
