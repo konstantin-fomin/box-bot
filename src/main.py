@@ -22,6 +22,7 @@ from src.config import Config, load_config
 from src.database import init_db
 from src.handlers import setup_routers
 from src.middlewares import HouseholdMembershipMiddleware
+from src.services.gemini import GeminiBoxAiParser
 
 
 _T = TypeVar("_T")
@@ -109,6 +110,13 @@ async def main() -> None:
     setup_logging(config)
     logging.info("Bot starting...")
     await init_db(config.database_path)
+    ai_parser = (
+        GeminiBoxAiParser(config.gemini_api_key, config.gemini_model)
+        if config.gemini_api_key
+        else None
+    )
+    if ai_parser is None:
+        logging.info("Gemini is not configured; AI text and voice parsing are disabled")
 
     session = AiohttpSession()
     session._connector_init["resolver"] = ExecutorResolver()
@@ -136,6 +144,7 @@ async def main() -> None:
         await dp.start_polling(
             bot,
             config=config,
+            ai_parser=ai_parser,
             bot_username=bot_info.username,
             allowed_updates=dp.resolve_used_update_types(),
         )

@@ -19,6 +19,10 @@ class Search(StatesGroup):
     waiting_for_query = State()
 
 
+class AiAction(StatesGroup):
+    waiting_confirmation = State()
+
+
 class HouseholdOnboarding(StatesGroup):
     waiting_for_name = State()
     waiting_for_invite_code = State()

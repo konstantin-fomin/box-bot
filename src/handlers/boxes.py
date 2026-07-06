@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import html
+import logging
 import re
 import tempfile
 from datetime import datetime
+from io import BytesIO
 from pathlib import Path
 
 from aiogram import Bot, F, Router
@@ -23,6 +25,7 @@ from ..keyboards import (
     BTN_MY_GROUP,
     BTN_NEW_BOX,
     BTN_SKIP_PHOTO,
+    ai_confirmation_keyboard,
     confirm_switch_household_keyboard,
     box_actions,
     cancel_keyboard,
@@ -34,10 +37,14 @@ from ..keyboards import (
 )
 from ..pdf_export import generate_boxes_pdf
 from ..qr import make_qr_file
+from ..services.ai_actions import AiCommand, ai_commands_to_dicts, format_ai_confirmation
+from ..services.gemini import BoxAiParser
 from ..states import AddItem, CreateBox, HouseholdOnboarding
+from ..states import AiAction
 
 
 router = Router(name="boxes")
+logger = logging.getLogger(__name__)
 MAX_MEDIA_GROUP_PHOTOS = 10
 
 WELCOME_TEXT = """👋 Привет! Я бот-органайзер для переезда.
@@ -404,9 +411,42 @@ async def create_box_room(message: Message, state: FSMContext) -> None:
 
 
 @router.message(CreateBox.items, F.voice)
-async def create_box_voice_stub(message: Message) -> None:
-    # TODO: добавить распознавание голосовых сообщений через облачный API.
-    await message.answer("Голосовые сообщения пока не распознаются. Пришлите список вещей текстом.")
+async def create_box_voice_items(
+    message: Message,
+    bot: Bot,
+    state: FSMContext,
+    ai_parser: BoxAiParser | None = None,
+) -> None:
+    if ai_parser is None:
+        await message.answer("Распознавание голосовых сообщений пока не настроено. Пришлите список вещей текстом.")
+        return
+    if message.voice is None:
+        return
+
+    buffer = BytesIO()
+    await bot.download(message.voice, destination=buffer)
+    try:
+        items = await ai_parser.parse_items_voice(buffer.getvalue(), message.voice.mime_type or "audio/ogg")
+    except Exception:
+        logger.exception("Не удалось распознать голосовой список вещей через Gemini")
+        await message.answer("Не смогла разобрать голосовое сообщение. Пришлите список вещей текстом.")
+        return
+
+    if not items:
+        await message.answer("Не удалось найти вещи в голосовом сообщении. Пришлите список текстом.")
+        return
+
+    await state.update_data(items=items, photo_file_ids=[])
+    await state.set_state(CreateBox.photos)
+    rows = "\n".join(f"• {html.escape(item)}" for item in items)
+    await message.answer(
+        (
+            f"Распознала вещи:\n{rows}\n\n"
+            "Пришлите одно или несколько фото коробки либо нажмите «Пропустить фото»."
+        ),
+        reply_markup=photos_keyboard(),
+        parse_mode="HTML",
+    )
 
 
 @router.message(CreateBox.items, F.text)
@@ -476,9 +516,49 @@ async def add_item_start(callback: CallbackQuery, state: FSMContext, config: Con
 
 
 @router.message(AddItem.waiting_for_items, F.voice)
-async def add_item_voice_stub(message: Message) -> None:
-    # TODO: добавить распознавание голосовых сообщений через облачный API.
-    await message.answer("Голосовые сообщения пока не распознаются. Пришлите вещи текстом.")
+async def add_item_voice(
+    message: Message,
+    bot: Bot,
+    state: FSMContext,
+    config: Config,
+    household_id: int,
+    ai_parser: BoxAiParser | None = None,
+) -> None:
+    if ai_parser is None:
+        await message.answer("Распознавание голосовых сообщений пока не настроено. Пришлите вещи текстом.")
+        return
+    if message.voice is None:
+        return
+
+    data = await state.get_data()
+    box_id = int(data["box_id"])
+    box = await database.get_box_by_id(config.database_path, box_id, household_id)
+    if box is None:
+        await state.clear()
+        await message.answer("Коробка не найдена.", reply_markup=main_menu())
+        return
+
+    buffer = BytesIO()
+    await bot.download(message.voice, destination=buffer)
+    try:
+        items = await ai_parser.parse_items_voice(buffer.getvalue(), message.voice.mime_type or "audio/ogg")
+    except Exception:
+        logger.exception("Не удалось распознать голосовой список вещей через Gemini")
+        await message.answer("Не смогла разобрать голосовое сообщение. Пришлите вещи текстом.")
+        return
+
+    if not items:
+        await message.answer("Не удалось найти вещи в голосовом сообщении. Пришлите список текстом.")
+        return
+
+    commands = [AiCommand(action="add_items", box_id=box.id, box_code=box.code, items=items)]
+    await state.update_data(ai_commands=ai_commands_to_dicts(commands))
+    await state.set_state(AiAction.waiting_confirmation)
+    await message.answer(
+        format_ai_confirmation(commands, [box]),
+        reply_markup=ai_confirmation_keyboard(),
+        parse_mode="HTML",
+    )
 
 
 @router.message(AddItem.waiting_for_items, F.text)
@@ -586,9 +666,3 @@ async def export_pdf(message: Message, config: Config, bot: Bot, household_id: i
             document=FSInputFile(pdf_path),
             caption=f"Экспорт коробок: {len(boxes)}",
         )
-
-
-@router.message(F.voice)
-async def voice_stub(message: Message) -> None:
-    # TODO: добавить распознавание голосовых сообщений через облачный API.
-    await message.answer("Голосовые сообщения пока не распознаются. Пришлите информацию текстом.")

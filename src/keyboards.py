@@ -113,6 +113,17 @@ def status_keyboard(box_id: int) -> InlineKeyboardMarkup:
     )
 
 
+def ai_confirmation_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Применить", callback_data="ai:confirm"),
+                InlineKeyboardButton(text="❌ Отмена", callback_data="ai:cancel"),
+            ]
+        ]
+    )
+
+
 def boxes_list_keyboard(boxes: list[Box]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
